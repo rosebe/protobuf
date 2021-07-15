@@ -32,6 +32,7 @@
  * @fileoverview This file contains helper code used by jspb.BinaryReader
  * and BinaryWriter.
  *
+ * @suppress {missingRequire} TODO(b/152540451): this shouldn't be needed
  * @author aappleby@google.com (Austin Appleby)
  */
 
@@ -510,7 +511,7 @@ jspb.utils.joinUnsignedDecimalString = function(bitsLow, bitsHigh) {
   // Skip the expensive conversion if the number is small enough to use the
   // built-in conversions.
   if (bitsHigh <= 0x1FFFFF) {
-    return '' + (jspb.BinaryConstants.TWO_TO_32 * bitsHigh + bitsLow);
+    return '' + jspb.utils.joinUint64(bitsLow, bitsHigh);
   }
 
   // What this code is doing is essentially converting the input number from

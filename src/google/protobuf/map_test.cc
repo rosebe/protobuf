@@ -80,6 +80,7 @@
 #include <google/protobuf/stubs/substitute.h>
 
 
+// Must be included last.
 #include <google/protobuf/port_def.inc>
 
 namespace google {
@@ -192,6 +193,62 @@ TEST_F(MapImplTest, OperatorBracket) {
 
   map_[key] = value2;
   ExpectSingleElement(key, value2);
+}
+
+struct MoveTestKey {
+  MoveTestKey(int data, int* copies) : data(data), copies(copies) {}
+
+  MoveTestKey(const MoveTestKey& other)
+      : data(other.data), copies(other.copies) {
+    ++*copies;
+  }
+
+  MoveTestKey(MoveTestKey&& other) noexcept
+      : data(other.data), copies(other.copies) {}
+
+  friend bool operator==(const MoveTestKey& lhs, const MoveTestKey& rhs) {
+    return lhs.data == rhs.data;
+  }
+  friend bool operator<(const MoveTestKey& lhs, const MoveTestKey& rhs) {
+    return lhs.data < rhs.data;
+  }
+
+  int data;
+  int* copies;
+};
+
+}  // namespace
+}  // namespace internal
+}  // namespace protobuf
+}  // namespace google
+
+namespace std {
+
+template <>  // NOLINT
+struct hash<google::protobuf::internal::MoveTestKey> {
+  size_t operator()(const google::protobuf::internal::MoveTestKey& key) const {
+    return hash<int>{}(key.data);
+  }
+};
+}  // namespace std
+
+namespace google {
+namespace protobuf {
+namespace internal {
+namespace {
+
+TEST_F(MapImplTest, OperatorBracketRValue) {
+  Arena arena;
+  for (Arena* arena_to_use : {&arena, static_cast<Arena*>(nullptr)}) {
+    int copies = 0;
+    Map<MoveTestKey, int> map(arena_to_use);
+    MoveTestKey key1(1, &copies);
+    EXPECT_EQ(copies, 0);
+    map[key1] = 0;
+    EXPECT_EQ(copies, 1);
+    map[MoveTestKey(2, &copies)] = 2;
+    EXPECT_EQ(copies, 1);
+  }
 }
 
 TEST_F(MapImplTest, OperatorBracketNonExist) {
@@ -1104,6 +1161,11 @@ void TestTransparent(const Key& key, const Key& miss_key) {
   EXPECT_EQ(m.erase(key), 0);
   EXPECT_EQ(m.erase(miss_key), 0);
   EXPECT_THAT(m, UnorderedElementsAre(Pair("DEF", 2)));
+
+  m[key];
+  EXPECT_THAT(m, UnorderedElementsAre(Pair("ABC", 0), Pair("DEF", 2)));
+  m[key] = 1;
+  EXPECT_THAT(m, UnorderedElementsAre(Pair("ABC", 1), Pair("DEF", 2)));
 }
 
 TEST_F(MapImplTest, TransparentLookupForString) {
@@ -1117,6 +1179,11 @@ TEST_F(MapImplTest, TransparentLookupForString) {
   std::string abc = "ABC", lkj = "LKJ";
   TestTransparent(std::ref(abc), std::ref(lkj));
   TestTransparent(std::cref(abc), std::cref(lkj));
+}
+
+TEST_F(MapImplTest, ConstInit) {
+  PROTOBUF_CONSTINIT static Map<int, int> map;  // NOLINT
+  EXPECT_TRUE(map.empty());
 }
 
 // Map Field Reflection Test ========================================
@@ -1404,19 +1471,19 @@ TEST_F(MapFieldReflectionTest, RepeatedFieldRefForRegularFields) {
   std::unique_ptr<Message> entry_int32_int32(
       MessageFactory::generated_factory()
           ->GetPrototype(fd_map_int32_int32->message_type())
-          ->New());
+          ->New(message.GetArena()));
   std::unique_ptr<Message> entry_int32_double(
       MessageFactory::generated_factory()
           ->GetPrototype(fd_map_int32_double->message_type())
-          ->New());
+          ->New(message.GetArena()));
   std::unique_ptr<Message> entry_string_string(
       MessageFactory::generated_factory()
           ->GetPrototype(fd_map_string_string->message_type())
-          ->New());
+          ->New(message.GetArena()));
   std::unique_ptr<Message> entry_int32_foreign_message(
       MessageFactory::generated_factory()
           ->GetPrototype(fd_map_int32_foreign_message->message_type())
-          ->New());
+          ->New(message.GetArena()));
 
   EXPECT_EQ(10, mf_int32_int32.size());
   EXPECT_EQ(10, mmf_int32_int32.size());
@@ -1823,6 +1890,15 @@ TEST_F(MapFieldReflectionTest, RepeatedFieldRefForRegularFields) {
     EXPECT_EQ(int32_value9a, int32_value0b);
     EXPECT_EQ(int32_value0a, int32_value9b);
   }
+
+  // TODO(b/181148674): After supporting arena agnostic delete or let map entry
+  // handle heap allocation, this could be removed.
+  if (message.GetArena() != nullptr) {
+    entry_int32_int32.release();
+    entry_int32_double.release();
+    entry_string_string.release();
+    entry_int32_foreign_message.release();
+  }
 }
 
 TEST_F(MapFieldReflectionTest, RepeatedFieldRefMergeFromAndSwap) {
@@ -1984,6 +2060,39 @@ TEST_F(MapFieldReflectionTest, UninitializedEntry) {
   auto entry = reflection->AddMessage(&message, field);
   EXPECT_FALSE(entry->IsInitialized());
   EXPECT_FALSE(message.IsInitialized());
+}
+
+class MyMapEntry
+    : public internal::MapEntry<MyMapEntry, ::google::protobuf::int32, ::google::protobuf::int32,
+                                internal::WireFormatLite::TYPE_INT32,
+                                internal::WireFormatLite::TYPE_INT32> {
+ public:
+  constexpr MyMapEntry() {}
+  MyMapEntry(Arena*) { std::abort(); }
+  Metadata GetMetadata() const override { std::abort(); }
+  static bool ValidateKey(void*) { return true; }
+  static bool ValidateValue(void*) { return true; }
+};
+
+class MyMapEntryLite
+    : public internal::MapEntryLite<MyMapEntryLite, ::google::protobuf::int32, ::google::protobuf::int32,
+                                    internal::WireFormatLite::TYPE_INT32,
+                                    internal::WireFormatLite::TYPE_INT32> {
+ public:
+  constexpr MyMapEntryLite() {}
+  explicit MyMapEntryLite(Arena*) { std::abort(); }
+  static bool ValidateKey(void*) { return true; }
+  static bool ValidateValue(void*) { return true; }
+};
+
+TEST(MapEntryTest, ConstInit) {
+  // This verifies that `MapEntry`, `MapEntryLite` and `MapEntryImpl` can be
+  // constant initialized.
+  PROTOBUF_CONSTINIT static MyMapEntry entry{};
+  EXPECT_NE(entry.SpaceUsed(), 0);
+
+  PROTOBUF_CONSTINIT static MyMapEntryLite entry_lite{};  // NOLINT
+  EXPECT_TRUE(entry_lite.IsInitialized());
 }
 
 // Generated Message Test ===========================================
@@ -2304,6 +2413,21 @@ TEST(GeneratedMapFieldTest, SerializationToStream) {
   }
   EXPECT_TRUE(message2.ParseFromString(data));
   MapTestUtil::ExpectMapFieldsSet(message2);
+}
+
+TEST(GeneratedMapFieldTest, ParseFailsIfMalformed) {
+  unittest::TestMapSubmessage o, p;
+  auto m = o.mutable_test_map()->mutable_map_int32_foreign_message();
+  (*m)[0].set_c(-1);
+  std::string serialized;
+  EXPECT_TRUE(o.SerializeToString(&serialized));
+
+  // Should parse correctly.
+  EXPECT_TRUE(p.ParseFromString(serialized));
+
+  // Overwriting the last byte to 0xFF results in malformed wire.
+  serialized[serialized.size() - 1] = 0xFF;
+  EXPECT_FALSE(p.ParseFromString(serialized));
 }
 
 
@@ -3428,6 +3552,7 @@ TEST(TextFormatMapTest, DynamicMessage) {
                                                   "testdata/map_test_data.txt"),
                         &expected_text, true));
 
+  CleanStringLineEndings(&expected_text, false);
   EXPECT_EQ(message->DebugString(), expected_text);
 }
 
@@ -3627,6 +3752,22 @@ TEST(ArenaTest, DynamicMapFieldOnArena) {
   reflection_tester.ExpectMapFieldsSetViaReflectionIterator(message1);
   message2.CopyFrom(*message1);
   MapTestUtil::ExpectMapFieldsSet(message2);
+}
+
+TEST(ArenaTest, DynamicMapFieldOnArenaMemoryLeak) {
+  auto* desc = unittest::TestMap::descriptor();
+  auto* field = desc->FindFieldByName("map_int32_int32");
+
+  Arena arena;
+  DynamicMessageFactory factory;
+  auto* message = factory.GetPrototype(desc)->New(&arena);
+  auto* reflection = message->GetReflection();
+  reflection->AddMessage(message, field);
+
+  // Force internal syncing, which initializes the mutex.
+  MapReflectionTester reflection_tester(unittest::TestMap::descriptor());
+  int size = reflection_tester.MapSize(*message, "map_int32_int32");
+  EXPECT_EQ(size, 1);
 }
 
 TEST(MoveTest, MoveConstructorWorks) {

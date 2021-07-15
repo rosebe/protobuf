@@ -41,19 +41,19 @@ namespace google {
 namespace protobuf {
 namespace internal {
 
-void AnyMetadata::PackFrom(const Message& message) {
-  PackFrom(message, kTypeGoogleApisComPrefix);
+bool AnyMetadata::PackFrom(Arena* arena, const Message& message) {
+  return PackFrom(arena, message, kTypeGoogleApisComPrefix);
 }
 
-void AnyMetadata::PackFrom(const Message& message,
+bool AnyMetadata::PackFrom(Arena* arena,
+                           const Message& message,
                            StringPiece type_url_prefix) {
   type_url_->Set(
       &::PROTOBUF_NAMESPACE_ID::internal::GetEmptyString(),
       GetTypeUrl(message.GetDescriptor()->full_name(), type_url_prefix),
-      nullptr);
-  message.SerializeToString(value_->Mutable(
-      &::PROTOBUF_NAMESPACE_ID::internal::GetEmptyStringAlreadyInited(),
-      nullptr));
+      arena);
+  return message.SerializeToString(
+      value_->Mutable(ArenaStringPtr::EmptyDefault{}, arena));
 }
 
 bool AnyMetadata::UnpackTo(Message* message) const {
@@ -81,3 +81,5 @@ bool GetAnyFieldDescriptors(const Message& message,
 }  // namespace internal
 }  // namespace protobuf
 }  // namespace google
+
+#include <google/protobuf/port_undef.inc>

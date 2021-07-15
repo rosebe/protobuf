@@ -28,13 +28,16 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 #include <google/protobuf/compiler/objectivec/objectivec_generator.h>
 #include <google/protobuf/compiler/objectivec/objectivec_file.h>
 #include <google/protobuf/compiler/objectivec/objectivec_helpers.h>
 #include <google/protobuf/io/printer.h>
 #include <google/protobuf/io/zero_copy_stream.h>
+#include <google/protobuf/stubs/strutil.h>
 
 namespace google {
 namespace protobuf {
@@ -50,17 +53,17 @@ bool ObjectiveCGenerator::HasGenerateAll() const {
 }
 
 bool ObjectiveCGenerator::Generate(const FileDescriptor* file,
-                                   const string& parameter,
+                                   const std::string& parameter,
                                    GeneratorContext* context,
-                                   string* error) const {
+                                   std::string* error) const {
   *error = "Unimplemented Generate() method. Call GenerateAll() instead.";
   return false;
 }
 
-bool ObjectiveCGenerator::GenerateAll(const std::vector<const FileDescriptor*>& files,
-                                      const string& parameter,
-                                      GeneratorContext* context,
-                                      string* error) const {
+bool ObjectiveCGenerator::GenerateAll(
+    const std::vector<const FileDescriptor*>& files,
+    const std::string& parameter, GeneratorContext* context,
+    std::string* error) const {
   // -----------------------------------------------------------------
   // Parse generator options. These options are passed to the compiler using the
   // --objc_opt flag. The options are passed as a comma separated list of
@@ -71,7 +74,7 @@ bool ObjectiveCGenerator::GenerateAll(const std::vector<const FileDescriptor*>& 
 
   Options generation_options;
 
-  std::vector<std::pair<string, string> > options;
+  std::vector<std::pair<std::string, std::string> > options;
   ParseGeneratorParameter(parameter, &options);
   for (int i = 0; i < options.size(); i++) {
     if (options[i].first == "expected_prefixes_path") {
@@ -137,8 +140,55 @@ bool ObjectiveCGenerator::GenerateAll(const std::vector<const FileDescriptor*>& 
       // header search path since the generate #import will be more complete.
       generation_options.runtime_import_prefix =
           StripSuffixString(options[i].second, "/");
+    } else if (options[i].first == "use_package_as_prefix") {
+      // Controls how the symbols should be prefixed to avoid symbols
+      // collisions. The objc_class_prefix file option is always honored, this
+      // is just what to do if that isn't set. The available options are:
+      //   "no": Not prefixed (the existing mode).
+      //   "yes": Make a prefix out of the proto package.
+      std::string upper_value(options[i].second);
+      UpperString(&upper_value);
+      if (upper_value == "NO") {
+        SetUseProtoPackageAsDefaultPrefix(false);
+      } else if (upper_value == "YES") {
+        SetUseProtoPackageAsDefaultPrefix(true);
+      } else {
+        *error = "error: Unknown use_package_as_prefix: " + options[i].second;
+        return false;
+      }
+    } else if (options[i].first == "proto_package_prefix_exceptions_path") {
+      // Path to find a file containing the list of proto package names that are
+      // exceptions when use_package_as_prefix is enabled. This can be used to
+      // migrate packages one at a time to use_package_as_prefix since there
+      // are likely code updates needed with each one.
+      //
+      // The format of the file is:
+      //   - An entry is a line of "proto.package.name".
+      //   - Comments start with "#".
+      //   - A comment can go on a line after a expected package/prefix pair.
+      //     (i.e. - "some.proto.package # comment")
+      SetProtoPackagePrefixExceptionList(options[i].second);
     } else {
       *error = "error: Unknown generator option: " + options[i].first;
+      return false;
+    }
+  }
+
+  // -----------------------------------------------------------------
+
+  // These are not official generation options and could be removed/changed in
+  // the future and doing that won't count as a breaking change.
+  bool headers_only = getenv("GPB_OBJC_HEADERS_ONLY") != NULL;
+  std::unordered_set<std::string> skip_impls;
+  if (getenv("GPB_OBJC_SKIP_IMPLS_FILE") != NULL) {
+    std::ifstream skip_file(getenv("GPB_OBJC_SKIP_IMPLS_FILE"));
+    if (skip_file.is_open()) {
+      std::string line;
+      while (std::getline(skip_file, line)) {
+        skip_impls.insert(line);
+      }
+    } else {
+      *error = "error: Failed to open GPB_OBJC_SKIP_IMPLS_FILE file";
       return false;
     }
   }
@@ -154,7 +204,7 @@ bool ObjectiveCGenerator::GenerateAll(const std::vector<const FileDescriptor*>& 
   for (int i = 0; i < files.size(); i++) {
     const FileDescriptor* file = files[i];
     FileGenerator file_generator(file, generation_options);
-    string filepath = FilePath(file);
+    std::string filepath = FilePath(file);
 
     // Generate header.
     {
@@ -165,7 +215,7 @@ bool ObjectiveCGenerator::GenerateAll(const std::vector<const FileDescriptor*>& 
     }
 
     // Generate m file.
-    {
+    if (!headers_only && skip_impls.count(file->name()) == 0) {
       std::unique_ptr<io::ZeroCopyOutputStream> output(
           context->Open(filepath + ".pbobjc.m"));
       io::Printer printer(output.get(), '$');

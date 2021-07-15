@@ -72,8 +72,8 @@ class MapIterator;
 // map key.
 class PROTOBUF_EXPORT MapKey {
  public:
-  MapKey() : type_(0) {}
-  MapKey(const MapKey& other) : type_(0) { CopyFrom(other); }
+  MapKey() : type_() {}
+  MapKey(const MapKey& other) : type_() { CopyFrom(other); }
 
   MapKey& operator=(const MapKey& other) {
     CopyFrom(other);
@@ -87,12 +87,12 @@ class PROTOBUF_EXPORT MapKey {
   }
 
   FieldDescriptor::CppType type() const {
-    if (type_ == 0) {
+    if (type_ == FieldDescriptor::CppType()) {
       GOOGLE_LOG(FATAL) << "Protocol Buffer map usage error:\n"
                  << "MapKey::type MapKey is not initialized. "
                  << "Call set methods to initialize MapKey.";
     }
-    return (FieldDescriptor::CppType)type_;
+    return type_;
   }
 
   void SetInt64Value(int64 value) {
@@ -261,7 +261,8 @@ class PROTOBUF_EXPORT MapKey {
   }
 
   // type_ is 0 or a valid FieldDescriptor::CppType.
-  int type_;
+  // Use "CppType()" to indicate zero.
+  FieldDescriptor::CppType type_;
 };
 
 }  // namespace protobuf
@@ -324,14 +325,18 @@ class PROTOBUF_EXPORT MapFieldBase {
  public:
   MapFieldBase()
       : arena_(NULL), repeated_field_(NULL), state_(STATE_MODIFIED_MAP) {}
+
+  // This constructor is for constant initialized global instances.
+  // It uses a linker initialized mutex, so it is not compatible with regular
+  // runtime instances.
+  // Except in MSVC, where we can't have a constinit mutex.
+  explicit constexpr MapFieldBase(ConstantInitialized)
+      : arena_(nullptr),
+        repeated_field_(nullptr),
+        mutex_(GOOGLE_PROTOBUF_LINKER_INITIALIZED),
+        state_(STATE_MODIFIED_MAP) {}
   explicit MapFieldBase(Arena* arena)
-      : arena_(arena), repeated_field_(NULL), state_(STATE_MODIFIED_MAP) {
-    // Mutex's destructor needs to be called explicitly to release resources
-    // acquired in its constructor.
-    if (arena) {
-      arena->OwnDestructor(&mutex_);
-    }
-  }
+      : arena_(arena), repeated_field_(nullptr), state_(STATE_MODIFIED_MAP) {}
   virtual ~MapFieldBase();
 
   // Returns reference to internal repeated field. Data written using
@@ -360,7 +365,8 @@ class PROTOBUF_EXPORT MapFieldBase {
   virtual void MapBegin(MapIterator* map_iter) const = 0;
   virtual void MapEnd(MapIterator* map_iter) const = 0;
   virtual void MergeFrom(const MapFieldBase& other) = 0;
-  virtual void Swap(MapFieldBase* other) = 0;
+  virtual void Swap(MapFieldBase* other);
+  virtual void UnsafeShallowSwap(MapFieldBase* other);
   // Sync Map with repeated field and returns the size of map.
   virtual int size() const = 0;
   virtual void Clear() = 0;
@@ -395,6 +401,8 @@ class PROTOBUF_EXPORT MapFieldBase {
 
   // Provides derived class the access to repeated field.
   void* MutableRepeatedPtrField() const;
+
+  void InternalSwap(MapFieldBase* other);
 
   // Support thread sanitizer (tsan) by making const / mutable races
   // more apparent.  If one thread calls MutableAccess() while another
@@ -435,6 +443,7 @@ class PROTOBUF_EXPORT MapFieldBase {
   friend class ContendedMapCleanTest;
   friend class GeneratedMessageReflection;
   friend class MapFieldAccessor;
+  friend class ::PROTOBUF_NAMESPACE_ID::Reflection;
   friend class ::PROTOBUF_NAMESPACE_ID::DynamicMessage;
 
   // Virtual helper methods for MapIterator. MapIterator doesn't have the
@@ -466,6 +475,12 @@ template <typename Key, typename T>
 class TypeDefinedMapFieldBase : public MapFieldBase {
  public:
   TypeDefinedMapFieldBase() {}
+
+  // This constructor is for constant initialized global instances.
+  // It uses a linker initialized mutex, so it is not compatible with regular
+  // runtime instances.
+  explicit constexpr TypeDefinedMapFieldBase(ConstantInitialized tag)
+      : MapFieldBase(tag) {}
   explicit TypeDefinedMapFieldBase(Arena* arena) : MapFieldBase(arena) {}
   ~TypeDefinedMapFieldBase() override {}
   void MapBegin(MapIterator* map_iter) const override;
@@ -521,6 +536,12 @@ class MapField : public TypeDefinedMapFieldBase<Key, T> {
   typedef Map<Key, T> MapType;
 
   MapField() {}
+
+  // This constructor is for constant initialized global instances.
+  // It uses a linker initialized mutex, so it is not compatible with regular
+  // runtime instances.
+  explicit constexpr MapField(ConstantInitialized tag)
+      : TypeDefinedMapFieldBase<Key, T>(tag), impl_() {}
   explicit MapField(Arena* arena)
       : TypeDefinedMapFieldBase<Key, T>(arena), impl_(arena) {}
 
@@ -548,6 +569,8 @@ class MapField : public TypeDefinedMapFieldBase<Key, T> {
   void Clear() override;
   void MergeFrom(const MapFieldBase& other) override;
   void Swap(MapFieldBase* other) override;
+  void UnsafeShallowSwap(MapFieldBase* other) override;
+  void InternalSwap(MapField* other);
 
   // Used in the implementation of parsing. Caller should take the ownership iff
   // arena_ is NULL.
@@ -629,6 +652,7 @@ class PROTOBUF_EXPORT DynamicMapField
   bool DeleteMapValue(const MapKey& map_key) override;
   void MergeFrom(const MapFieldBase& other) override;
   void Swap(MapFieldBase* other) override;
+  void UnsafeShallowSwap(MapFieldBase* other) override { Swap(other); }
 
   const Map<MapKey, MapValueRef>& GetMap() const override;
   Map<MapKey, MapValueRef>* MutableMap() override;
@@ -656,7 +680,7 @@ class PROTOBUF_EXPORT DynamicMapField
 // the map value.
 class PROTOBUF_EXPORT MapValueConstRef {
  public:
-  MapValueConstRef() : data_(nullptr), type_(0) {}
+  MapValueConstRef() : data_(nullptr), type_() {}
 
   int64 GetInt64Value() const {
     TYPE_CHECK(FieldDescriptor::CPPTYPE_INT64,
@@ -713,15 +737,16 @@ class PROTOBUF_EXPORT MapValueConstRef {
   // own this value.
   void* data_;
   // type_ is 0 or a valid FieldDescriptor::CppType.
-  int type_;
+  // Use "CppType()" to indicate zero.
+  FieldDescriptor::CppType type_;
 
   FieldDescriptor::CppType type() const {
-    if (type_ == 0 || data_ == nullptr) {
+    if (type_ == FieldDescriptor::CppType() || data_ == nullptr) {
       GOOGLE_LOG(FATAL)
           << "Protocol Buffer map usage error:\n"
           << "MapValueConstRef::type MapValueConstRef is not initialized.";
     }
-    return static_cast<FieldDescriptor::CppType>(type_);
+    return type_;
   }
 
  private:

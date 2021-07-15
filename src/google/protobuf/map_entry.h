@@ -93,13 +93,13 @@ template <typename Derived, typename Key, typename Value,
 class MapEntry : public MapEntryImpl<Derived, Message, Key, Value,
                                      kKeyFieldType, kValueFieldType> {
  public:
-  MapEntry() : _internal_metadata_(NULL) {}
+  constexpr MapEntry() : _internal_metadata_() {}
   explicit MapEntry(Arena* arena)
       : MapEntryImpl<Derived, Message, Key, Value, kKeyFieldType,
                      kValueFieldType>(arena),
         _internal_metadata_(arena) {}
   ~MapEntry() {
-    Message::_internal_metadata_.Delete<UnknownFieldSet>();
+    Message::_internal_metadata_.template Delete<UnknownFieldSet>();
     _internal_metadata_.Delete<UnknownFieldSet>();
   }
   typedef void InternalArenaConstructable_;
